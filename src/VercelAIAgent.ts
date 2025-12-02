@@ -1,4 +1,4 @@
-import type { CoreMessage, Tool } from 'ai';
+import type { ModelMessage, Tool } from 'ai';
 import { streamText } from 'ai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -9,7 +9,7 @@ import {
   type Mem0ChatSettings,
   type Mem0ConfigSettings,
 } from '@mem0/vercel-ai-provider';
-import { z, type ZodTypeAny } from 'zod';
+import { z, type ZodType } from 'zod';
 import type {
   Channel,
   Event,
@@ -55,7 +55,7 @@ export interface AgentTool {
   name: string;
   description: string;
   instructions?: string;
-  parameters: ZodTypeAny;
+  parameters: ZodType;
   execute: (args: unknown, context: ToolExecutionContext) => Promise<string> | string;
   showExternalSourcesIndicator?: boolean;
 }
@@ -486,7 +486,7 @@ export class VercelAIAgent implements AIAgent {
     const history = this.channel.state.messages
       .slice(-10)
       .filter((msg) => msg.text && msg.text.trim() !== '')
-      .map<CoreMessage>((msg) => ({
+      .map<ModelMessage>((msg) => ({
         role: msg.user?.id.startsWith('ai-bot') ? 'assistant' : 'user',
         content: msg.text ?? '',
       }));
@@ -499,7 +499,7 @@ export class VercelAIAgent implements AIAgent {
       history.push({ role: 'user', content: incomingText });
     }
 
-    const messages: CoreMessage[] = [
+    const messages: ModelMessage[] = [
       { role: 'system', content: this.getSystemPrompt() },
       ...history,
     ];
@@ -609,7 +609,7 @@ class VercelResponseHandler {
     private readonly chatClient: StreamChat,
     private readonly channel: Channel,
     private readonly message: MessageResponse,
-    private readonly messages: CoreMessage[],
+    private readonly messages: ModelMessage[],
     private readonly sendEvent: (event: Record<string, unknown>) => Promise<void>,
     toolsResolver: () => AgentTool[],
   ) {
@@ -834,9 +834,9 @@ class VercelResponseHandler {
   }
 }
 
-const jsonSchemaToZod = (schema?: JsonSchemaDefinition): ZodTypeAny => {
+const jsonSchemaToZod = (schema?: JsonSchemaDefinition): ZodType => {
   if (!schema) {
-    return z.object({}).passthrough();
+    return z.looseObject({});
   }
 
   if (
@@ -879,7 +879,7 @@ const jsonSchemaToZod = (schema?: JsonSchemaDefinition): ZodTypeAny => {
     default: {
       const properties = schema.properties ?? {};
       const required = new Set(schema.required ?? []);
-      const shape: Record<string, ZodTypeAny> = {};
+      const shape: Record<string, ZodType> = {};
       for (const [key, propertySchema] of Object.entries(properties)) {
         let fieldSchema = jsonSchemaToZod(propertySchema);
         if (!required.has(key)) {
@@ -898,12 +898,12 @@ const jsonSchemaToZod = (schema?: JsonSchemaDefinition): ZodTypeAny => {
         objectSchema = objectSchema.passthrough();
       }
 
-      return applyDescription(objectSchema as ZodTypeAny, schema.description);
+      return applyDescription(objectSchema as ZodType, schema.description);
     }
   }
 };
 
-const applyDescription = <T extends ZodTypeAny>(
+const applyDescription = <T extends ZodType>(
   schema: T,
   description?: string,
 ): T => {
