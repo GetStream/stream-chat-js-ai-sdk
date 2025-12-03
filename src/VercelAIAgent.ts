@@ -252,7 +252,7 @@ export const createModelForPlatform = (
       if (!apiKey) {
         throw new Error('Anthropic API key is required');
       }
-      const resolvedModelId = modelId ?? 'claude-3-5-sonnet-20241022';
+      const resolvedModelId = modelId ?? 'claude-haiku-4-5';
       const mem0Model =
         options?.disableMem0
           ? undefined
