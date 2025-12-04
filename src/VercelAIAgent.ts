@@ -632,8 +632,6 @@ class VercelResponseHandler {
         (streamOptions as any).tools = toolDefinitions;
       }
 
-      console.log('STREAM OPTIONS: ', streamOptions)
-
       const result = await streamText(streamOptions);
 
       await this.consumeStream(result);
