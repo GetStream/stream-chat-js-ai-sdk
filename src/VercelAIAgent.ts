@@ -632,6 +632,8 @@ class VercelResponseHandler {
         (streamOptions as any).tools = toolDefinitions;
       }
 
+      console.log('STREAM OPTIONS: ', streamOptions)
+
       const result = await streamText(streamOptions);
 
       await this.consumeStream(result);
@@ -697,7 +699,7 @@ class VercelResponseHandler {
       for await (const payload of fullStream) {
         const part = (payload && typeof payload === 'object' && 'part' in payload
           ? (payload as { part?: { type?: string; [key: string]: unknown } }).part
-          : payload) as { type?: string; text?: string; textDelta?: string; error?: unknown } | null;
+          : payload) as { type?: string; text?: string; textDelta?: string; output?: string; error?: unknown } | null;
         if (!part || !part.type) {
           continue;
         }
@@ -708,6 +710,13 @@ class VercelResponseHandler {
             if (!delta) break;
             await this.updateIndicator('AI_STATE_GENERATING');
             this.messageText += delta;
+            this.schedulePartialUpdate();
+            break;
+          }
+          case 'tool-result': {
+            const toolOutput = part.output;
+            if (!toolOutput) break;
+            this.messageText += toolOutput;
             this.schedulePartialUpdate();
             break;
           }
