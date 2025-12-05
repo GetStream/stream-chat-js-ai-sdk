@@ -46,13 +46,18 @@ export const createDefaultTools = (): AgentTool[] => [
     }),
     execute: async (args: unknown) => {
       const { location, unit } = args as TemperatureToolArgs;
-      const temperatureCelsius = await fetchCurrentTemperature(location);
-      const temperature =
-        unit === 'Fahrenheit'
-          ? (temperatureCelsius * 9) / 5 + 32
-          : temperatureCelsius;
-      const suffix = unit === 'Celsius' ? 'C' : 'F';
-      return `${temperature.toFixed(1)}°${suffix}`;
+      try {
+        const temperatureCelsius = await fetchCurrentTemperature(location);
+        const temperature =
+          unit === 'Fahrenheit'
+            ? (temperatureCelsius * 9) / 5 + 32
+            : temperatureCelsius;
+        const suffix = unit === 'Celsius' ? 'C' : 'F';
+        return `${temperature.toFixed(1)}°${suffix}`;
+      } catch (error) {
+        console.error(error);
+        return `Couln't determine the temperature now.`;
+      }
     },
   },
 ];
