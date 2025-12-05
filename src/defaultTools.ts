@@ -33,7 +33,7 @@ export const createDefaultTools = (): AgentTool[] => [
     name: 'getCurrentTemperature',
     description: 'Get the current temperature for a specific location',
     instructions:
-      'Call getCurrentTemperature only when the user explicitly asks for the current temperature of a specific location.',
+      'Call getCurrentTemperature only when the user explicitly asks for the current temperature of a specific location. If it\'s a US city, return only the city, not the state, e.g. San Francisco (without CA)',
     parameters: z.object({
       location: z
         .string()
