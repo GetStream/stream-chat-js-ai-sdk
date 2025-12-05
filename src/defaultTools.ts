@@ -56,7 +56,7 @@ export const createDefaultTools = (): AgentTool[] => [
         return `${temperature.toFixed(1)}°${suffix}`;
       } catch (error) {
         console.error(error);
-        return `Couln't determine the temperature now.`;
+        return `I'm sorry, I couldn't get the current temperature for ${location}. Please try again later.`;
       }
     },
   },
