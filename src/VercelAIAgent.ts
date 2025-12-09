@@ -780,13 +780,19 @@ class VercelResponseHandler {
     if (this.finalized) return;
     const text = this.messageText;
     const id = this.message.id;
-    this.lastUpdatePromise = this.lastUpdatePromise.then(() =>
-      this.serverClient
-        .ephemeralUpdateMessage(id, {
-          set: { text, generating: true } as any,
-        }, this.chatClient.user?.id)
-        .then(() => undefined),
-    );
+    this.lastUpdatePromise = this.lastUpdatePromise.then(() => {
+      // this.serverClient.ephemeralUpdateMessage(
+      return this.chatClient
+        .partialUpdateMessage(
+          id,
+          { set: { text, generating: true } as any },
+          // this.chatClient.user?.id
+        )
+        .then(
+          () => undefined,
+          (err) => console.error("Failed to update message", err),
+        );
+    });
     await this.lastUpdatePromise;
   }
 
