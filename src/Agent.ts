@@ -111,6 +111,7 @@ export class Agent {
         this.model,
         this.instructions,
         this.getMem0Context(),
+        serverClient,
       );
       if (this.clientTools.length) {
         this.aiAgent.setClientToolDefinitions(this.clientTools);

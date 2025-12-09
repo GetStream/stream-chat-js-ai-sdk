@@ -318,9 +318,10 @@ export class VercelAIAgent implements AIAgent {
     readonly channel: Channel,
     private readonly platform: AgentPlatform,
     tools: AgentTool[] = [],
-    modelOverride?: string,
-    additionalInstructions?: string[],
-    mem0Context?: Mem0ContextInput,
+    modelOverride: string | undefined,
+    additionalInstructions: string[] | undefined,
+    mem0Context: Mem0ContextInput | undefined,
+    private serverClient: StreamChat,
   ) {
     this.serverTools = tools ?? [];
     this.modelOverride = modelOverride;
@@ -533,6 +534,7 @@ export class VercelAIAgent implements AIAgent {
       messages,
       (event) => this.safeSendEvent(event),
       () => this.getActiveTools(),
+      this.serverClient,
     );
 
     this.handlers.add(handler);
@@ -612,6 +614,7 @@ class VercelResponseHandler {
     private readonly messages: ModelMessage[],
     private readonly sendEvent: (event: Record<string, unknown>) => Promise<void>,
     toolsResolver: () => AgentTool[],
+    private readonly serverClient: StreamChat,
   ) {
     this.chatClient.on('ai_indicator.stop', this.handleStopGenerating);
     this.toolsResolver = toolsResolver;
@@ -778,10 +781,10 @@ class VercelResponseHandler {
     const text = this.messageText;
     const id = this.message.id;
     this.lastUpdatePromise = this.lastUpdatePromise.then(() =>
-      this.chatClient
+      this.serverClient
         .ephemeralUpdateMessage(id, {
           set: { text, generating: true } as any,
-        })
+        }, this.chatClient.user?.id)
         .then(() => undefined),
     );
     await this.lastUpdatePromise;
