@@ -779,7 +779,7 @@ class VercelResponseHandler {
     const id = this.message.id;
     this.lastUpdatePromise = this.lastUpdatePromise.then(() =>
       this.chatClient
-        .partialUpdateMessage(id, {
+        .ephemeralUpdateMessage(id, {
           set: { text, generating: true } as any,
         })
         .then(() => undefined),

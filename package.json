@@ -28,7 +28,7 @@
     "@mem0/vercel-ai-provider": "^2.0.4",
     "ai": "^5.0.106",
     "axios": "^1.13.2",
-    "stream-chat": "^9.26.0",
+    "stream-chat": "^9.27.0",
     "zod": "^4.1.13"
   },
   "devDependencies": {
