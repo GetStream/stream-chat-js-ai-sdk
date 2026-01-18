@@ -79,6 +79,27 @@ export interface ClientToolDefinition {
   showExternalSourcesIndicator?: boolean;
 }
 
+export interface FinalMessageAugmentorContext {
+  text: string;
+  message: MessageResponse;
+  channel: Channel;
+  messages: ModelMessage[];
+}
+
+export type FinalMessageAugmentor = (
+  context: FinalMessageAugmentorContext,
+) => Promise<Record<string, unknown> | void> | Record<string, unknown> | void;
+
+export interface UserMessageHandlerContext {
+  message: MessageResponse;
+  channel: Channel;
+  chatClient: StreamChat;
+}
+
+export type UserMessageHandler = (
+  context: UserMessageHandlerContext,
+) => Promise<boolean> | boolean;
+
 const cloneMem0ConfigOverrides = (
   config?: Partial<Mem0ConfigSettings>,
 ): Partial<Mem0ConfigSettings> | undefined => {
@@ -312,6 +333,8 @@ export class VercelAIAgent implements AIAgent {
   private readonly modelOverride?: string;
   private readonly additionalInstructions: string[];
   private readonly mem0Context?: Mem0ContextInput;
+  private readonly finalMessageAugmentor?: FinalMessageAugmentor;
+  private readonly userMessageHandler?: UserMessageHandler;
 
   constructor(
     readonly chatClient: StreamChat,
@@ -322,6 +345,8 @@ export class VercelAIAgent implements AIAgent {
     additionalInstructions: string[] | undefined,
     mem0Context: Mem0ContextInput | undefined,
     private serverClient: StreamChat,
+    finalMessageAugmentor?: FinalMessageAugmentor,
+    userMessageHandler?: UserMessageHandler,
   ) {
     this.serverTools = tools ?? [];
     this.modelOverride = modelOverride;
@@ -331,6 +356,8 @@ export class VercelAIAgent implements AIAgent {
         ? [additionalInstructions]
         : [];
     this.mem0Context = mem0Context;
+    this.finalMessageAugmentor = finalMessageAugmentor;
+    this.userMessageHandler = userMessageHandler;
   }
 
   init = async () => {
@@ -474,7 +501,22 @@ export class VercelAIAgent implements AIAgent {
       return;
     }
 
-    const incomingText = incomingMessage.text?.trim();
+    if (this.userMessageHandler) {
+      const handled = await this.userMessageHandler({
+        message: incomingMessage,
+        channel: this.channel,
+        chatClient: this.chatClient,
+      });
+      if (handled) {
+        return;
+      }
+    }
+
+    let incomingText = incomingMessage.text?.trim();
+    const a2uiQuery = this.extractA2uiActionQuery(incomingMessage);
+    if (a2uiQuery) {
+      incomingText = a2uiQuery;
+    }
     if (!incomingText) {
       return;
     }
@@ -535,6 +577,7 @@ export class VercelAIAgent implements AIAgent {
       (event) => this.safeSendEvent(event),
       () => this.getActiveTools(),
       this.serverClient,
+      this.finalMessageAugmentor,
     );
 
     this.handlers.add(handler);
@@ -547,6 +590,121 @@ export class VercelAIAgent implements AIAgent {
         this.handlers.delete(handler);
       });
   };
+
+  private extractA2uiActionQuery(
+    message: MessageResponse & {
+      extraData?: Record<string, unknown>;
+    },
+  ): string | undefined {
+    const payload =
+      this.extractStringValue(message.extraData?.['a2ui_interaction']) ??
+      this.extractStringValue(
+        (message as unknown as Record<string, unknown>)['a2ui_interaction'],
+      );
+    if (!payload) {
+      return undefined;
+    }
+
+    try {
+      const parsed = JSON.parse(payload);
+      const userAction = parsed?.userAction;
+      if (!userAction || typeof userAction !== 'object') {
+        return undefined;
+      }
+      const actionName = this.extractStringValue(
+        (userAction as Record<string, unknown>).name,
+      );
+      const context = this.extractObjectValue(
+        (userAction as Record<string, unknown>).context,
+      );
+      return this.describeA2uiAction(actionName, context);
+    } catch (error) {
+      console.warn('Failed to parse a2ui_interaction payload', error);
+      return undefined;
+    }
+  }
+
+  private describeA2uiAction(
+    actionName?: string,
+    context?: Record<string, unknown>,
+  ): string | undefined {
+    if (!actionName) {
+      return undefined;
+    }
+    const ctx = context ?? {};
+    const valueFor = (key: string) => this.extractContextValue(ctx[key]);
+
+    switch (actionName) {
+      case 'book_restaurant': {
+        const restaurant = valueFor('restaurantName') ?? 'Unknown Restaurant';
+        const address = valueFor('address');
+        const imageUrl = valueFor('imageUrl');
+        const parts = [`USER_WANTS_TO_BOOK: ${restaurant}`];
+        if (address) {
+          parts.push(`Address: ${address}`);
+        }
+        if (imageUrl) {
+          parts.push(`ImageURL: ${imageUrl}`);
+        }
+        return parts.join(', ');
+      }
+      case 'submit_booking': {
+        const restaurant = valueFor('restaurantName') ?? 'Unknown Restaurant';
+        const partySize = valueFor('partySize') ?? 'Unknown Size';
+        const reservationTime = valueFor('reservationTime') ?? 'Unknown Time';
+        const dietary = valueFor('dietary') ?? 'None';
+        const imageUrl = valueFor('imageUrl');
+        let description = `User submitted a booking for ${restaurant} for ${partySize} people at ${reservationTime} with dietary requirements: ${dietary}`;
+        if (imageUrl) {
+          description += `. Image URL: ${imageUrl}`;
+        }
+        return description;
+      }
+      default:
+        return `User submitted an event: ${actionName} with data: ${JSON.stringify(
+          ctx,
+        )}`;
+    }
+  }
+
+  private extractContextValue(value: unknown): string | undefined {
+    if (value == null) {
+      return undefined;
+    }
+    if (typeof value === 'string') {
+      return value;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+    if (Array.isArray(value)) {
+      return value
+        .map((item) => this.extractContextValue(item))
+        .filter((item): item is string => Boolean(item))
+        .join(', ');
+    }
+    if (typeof value === 'object') {
+      return JSON.stringify(value);
+    }
+    return undefined;
+  }
+
+  private extractStringValue(value: unknown): string | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : undefined;
+  }
+
+  private extractObjectValue(
+    value: unknown,
+  ): Record<string, unknown> | undefined {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+    return undefined;
+  }
 
   private async handlePreflightError(
     message: MessageResponse,
@@ -605,6 +763,7 @@ class VercelResponseHandler {
   private readonly updateIntervalMs = 200;
   private disposed = false;
   private readonly toolsResolver: () => AgentTool[];
+  private readonly finalMessageAugmentor?: FinalMessageAugmentor;
 
   constructor(
     private readonly model: StreamLanguageModel,
@@ -615,9 +774,11 @@ class VercelResponseHandler {
     private readonly sendEvent: (event: Record<string, unknown>) => Promise<void>,
     toolsResolver: () => AgentTool[],
     private readonly serverClient: StreamChat,
+    finalMessageAugmentor?: FinalMessageAugmentor,
   ) {
     this.chatClient.on('ai_indicator.stop', this.handleStopGenerating);
     this.toolsResolver = toolsResolver;
+    this.finalMessageAugmentor = finalMessageAugmentor;
   }
 
   run = async () => {
@@ -819,6 +980,30 @@ class VercelResponseHandler {
     });
   }
 
+  private async buildFinalSetPayload(): Promise<Record<string, unknown>> {
+    const basePayload: Record<string, unknown> = {
+      text: this.messageText,
+      generating: false,
+    };
+    if (!this.finalMessageAugmentor) {
+      return basePayload;
+    }
+    try {
+      const augmented = await this.finalMessageAugmentor({
+        text: this.messageText,
+        message: this.message,
+        channel: this.channel,
+        messages: this.messages,
+      });
+      if (augmented && typeof augmented === 'object') {
+        return { ...basePayload, ...augmented };
+      }
+    } catch (error) {
+      console.error('Final message augmentor failed', error);
+    }
+    return basePayload;
+  }
+
   private async finalizeMessage() {
     if (this.finalized) return;
     this.finalized = true;
@@ -827,8 +1012,9 @@ class VercelResponseHandler {
       this.pendingUpdateTimer = null;
     }
     await this.lastUpdatePromise.catch(() => Promise.resolve());
+    const setPayload = await this.buildFinalSetPayload();
     await this.chatClient.partialUpdateMessage(this.message.id, {
-      set: { text: this.messageText, generating: false } as any,
+      set: setPayload as any,
     });
     await this.clearIndicator();
   }

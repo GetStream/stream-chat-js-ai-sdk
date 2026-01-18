@@ -9,4 +9,8 @@ export {
   type ClientToolDefinition,
   type ToolExecutionContext,
   type Mem0ContextInput,
+  type FinalMessageAugmentor,
+  type FinalMessageAugmentorContext,
+  type UserMessageHandler,
+  type UserMessageHandlerContext,
 } from './VercelAIAgent';
