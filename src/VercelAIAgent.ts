@@ -498,6 +498,7 @@ export class VercelAIAgent implements AIAgent {
       ai_generated?: boolean;
     };
     if (!incomingMessage || incomingMessage.ai_generated) {
+      console.log(`[handleMessage] skipping — no message or ai_generated`);
       return;
     }
 
@@ -941,17 +942,17 @@ class VercelResponseHandler {
     if (this.finalized) return;
     const text = this.messageText;
     const id = this.message.id;
+    const userId = this.chatClient.user?.id;
     this.lastUpdatePromise = this.lastUpdatePromise.then(() => {
-      // this.serverClient.ephemeralUpdateMessage(
-      return this.chatClient
-        .partialUpdateMessage(
+      return this.serverClient
+        .ephemeralUpdateMessage(
           id,
           { set: { text, generating: true } as any },
-          // this.chatClient.user?.id
+          userId,
         )
         .then(
-          () => undefined,
-          (err) => console.error("Failed to update message", err),
+          () => console.log(`[ephemeralUpdateMessage] success messageId=${id}`),
+          (err) => console.error("[ephemeralUpdateMessage] failed", err),
         );
     });
     await this.lastUpdatePromise;
