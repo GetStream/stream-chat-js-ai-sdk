@@ -79,6 +79,39 @@ export interface ClientToolDefinition {
   showExternalSourcesIndicator?: boolean;
 }
 
+export interface FinalMessageAugmentorContext {
+  text: string;
+  message: MessageResponse;
+  channel: Channel;
+  messages: ModelMessage[];
+}
+
+export type FinalMessageAugmentor = (
+  context: FinalMessageAugmentorContext,
+) => Promise<Record<string, unknown> | void> | Record<string, unknown> | void;
+
+export interface UserMessageHandlerContext {
+  message: MessageResponse;
+  channel: Channel;
+  chatClient: StreamChat;
+}
+
+export type UserMessageHandler = (
+  context: UserMessageHandlerContext,
+) => Promise<boolean> | boolean;
+
+/**
+ * A callback that converts an A2UI action into a natural-language description
+ * that is appended to the user message sent to the LLM.
+ *
+ * Return a string to supply the description, or `undefined` to fall back to
+ * the default behaviour (serialise the action name and raw context as JSON).
+ */
+export type A2uiActionProvider = (
+  actionName: string,
+  context: Record<string, unknown>,
+) => string | undefined;
+
 const cloneMem0ConfigOverrides = (
   config?: Partial<Mem0ConfigSettings>,
 ): Partial<Mem0ConfigSettings> | undefined => {
@@ -312,6 +345,9 @@ export class VercelAIAgent implements AIAgent {
   private readonly modelOverride?: string;
   private readonly additionalInstructions: string[];
   private readonly mem0Context?: Mem0ContextInput;
+  private readonly finalMessageAugmentor?: FinalMessageAugmentor;
+  private readonly userMessageHandler?: UserMessageHandler;
+  private readonly a2uiActionProvider?: A2uiActionProvider;
 
   constructor(
     readonly chatClient: StreamChat,
@@ -322,6 +358,9 @@ export class VercelAIAgent implements AIAgent {
     additionalInstructions: string[] | undefined,
     mem0Context: Mem0ContextInput | undefined,
     private serverClient: StreamChat,
+    finalMessageAugmentor?: FinalMessageAugmentor,
+    userMessageHandler?: UserMessageHandler,
+    a2uiActionProvider?: A2uiActionProvider,
   ) {
     this.serverTools = tools ?? [];
     this.modelOverride = modelOverride;
@@ -331,6 +370,9 @@ export class VercelAIAgent implements AIAgent {
         ? [additionalInstructions]
         : [];
     this.mem0Context = mem0Context;
+    this.finalMessageAugmentor = finalMessageAugmentor;
+    this.userMessageHandler = userMessageHandler;
+    this.a2uiActionProvider = a2uiActionProvider;
   }
 
   init = async () => {
@@ -475,7 +517,22 @@ export class VercelAIAgent implements AIAgent {
       return;
     }
 
-    const incomingText = incomingMessage.text?.trim();
+    if (this.userMessageHandler) {
+      const handled = await this.userMessageHandler({
+        message: incomingMessage,
+        channel: this.channel,
+        chatClient: this.chatClient,
+      });
+      if (handled) {
+        return;
+      }
+    }
+
+    let incomingText = incomingMessage.text?.trim();
+    const a2uiQuery = this.extractA2uiActionQuery(incomingMessage);
+    if (a2uiQuery) {
+      incomingText = a2uiQuery;
+    }
     if (!incomingText) {
       return;
     }
@@ -536,6 +593,7 @@ export class VercelAIAgent implements AIAgent {
       (event) => this.safeSendEvent(event),
       () => this.getActiveTools(),
       this.serverClient,
+      this.finalMessageAugmentor,
     );
 
     this.handlers.add(handler);
@@ -548,6 +606,99 @@ export class VercelAIAgent implements AIAgent {
         this.handlers.delete(handler);
       });
   };
+
+  private extractA2uiActionQuery(
+    message: MessageResponse & {
+      extraData?: Record<string, unknown>;
+    },
+  ): string | undefined {
+    const payload =
+      this.extractStringValue(message.extraData?.['a2ui_interaction']) ??
+      this.extractStringValue(
+        (message as unknown as Record<string, unknown>)['a2ui_interaction'],
+      );
+    if (!payload) {
+      return undefined;
+    }
+
+    try {
+      const parsed = JSON.parse(payload);
+      const userAction = parsed?.userAction;
+      if (!userAction || typeof userAction !== 'object') {
+        return undefined;
+      }
+      const actionName = this.extractStringValue(
+        (userAction as Record<string, unknown>).name,
+      );
+      const context = this.extractObjectValue(
+        (userAction as Record<string, unknown>).context,
+      );
+      return this.describeA2uiAction(actionName, context);
+    } catch (error) {
+      console.warn('Failed to parse a2ui_interaction payload', error);
+      return undefined;
+    }
+  }
+
+  private describeA2uiAction(
+    actionName?: string,
+    context?: Record<string, unknown>,
+  ): string | undefined {
+    if (!actionName) {
+      return undefined;
+    }
+    const ctx = context ?? {};
+
+    if (this.a2uiActionProvider) {
+      const result = this.a2uiActionProvider(actionName, ctx);
+      if (result !== undefined) {
+        return result;
+      }
+    }
+
+    return `User submitted an event: ${actionName} with data: ${JSON.stringify(
+      ctx,
+    )}`;
+  }
+
+  private extractContextValue(value: unknown): string | undefined {
+    if (value == null) {
+      return undefined;
+    }
+    if (typeof value === 'string') {
+      return value;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+    if (Array.isArray(value)) {
+      return value
+        .map((item) => this.extractContextValue(item))
+        .filter((item): item is string => Boolean(item))
+        .join(', ');
+    }
+    if (typeof value === 'object') {
+      return JSON.stringify(value);
+    }
+    return undefined;
+  }
+
+  private extractStringValue(value: unknown): string | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : undefined;
+  }
+
+  private extractObjectValue(
+    value: unknown,
+  ): Record<string, unknown> | undefined {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+    return undefined;
+  }
 
   private async handlePreflightError(
     message: MessageResponse,
@@ -606,6 +757,7 @@ class VercelResponseHandler {
   private readonly updateIntervalMs = 200;
   private disposed = false;
   private readonly toolsResolver: () => AgentTool[];
+  private readonly finalMessageAugmentor?: FinalMessageAugmentor;
 
   constructor(
     private readonly model: StreamLanguageModel,
@@ -616,9 +768,11 @@ class VercelResponseHandler {
     private readonly sendEvent: (event: Record<string, unknown>) => Promise<void>,
     toolsResolver: () => AgentTool[],
     private readonly serverClient: StreamChat,
+    finalMessageAugmentor?: FinalMessageAugmentor,
   ) {
     this.chatClient.on('ai_indicator.stop', this.handleStopGenerating);
     this.toolsResolver = toolsResolver;
+    this.finalMessageAugmentor = finalMessageAugmentor;
   }
 
   run = async () => {
@@ -820,6 +974,30 @@ class VercelResponseHandler {
     });
   }
 
+  private async buildFinalSetPayload(): Promise<Record<string, unknown>> {
+    const basePayload: Record<string, unknown> = {
+      text: this.messageText,
+      generating: false,
+    };
+    if (!this.finalMessageAugmentor) {
+      return basePayload;
+    }
+    try {
+      const augmented = await this.finalMessageAugmentor({
+        text: this.messageText,
+        message: this.message,
+        channel: this.channel,
+        messages: this.messages,
+      });
+      if (augmented && typeof augmented === 'object') {
+        return { ...basePayload, ...augmented };
+      }
+    } catch (error) {
+      console.error('Final message augmentor failed', error);
+    }
+    return basePayload;
+  }
+
   private async finalizeMessage() {
     if (this.finalized) return;
     this.finalized = true;
@@ -828,8 +1006,9 @@ class VercelResponseHandler {
       this.pendingUpdateTimer = null;
     }
     await this.lastUpdatePromise.catch(() => Promise.resolve());
+    const setPayload = await this.buildFinalSetPayload();
     await this.chatClient.partialUpdateMessage(this.message.id, {
-      set: { text: this.messageText, generating: false } as any,
+      set: setPayload as any,
     });
     await this.clearIndicator();
   }

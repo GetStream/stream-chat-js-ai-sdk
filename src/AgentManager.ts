@@ -1,8 +1,11 @@
 import { Agent } from './Agent';
 import type { AgentPlatform } from './types';
 import type {
+  A2uiActionProvider,
   AgentTool,
   ClientToolDefinition,
+  FinalMessageAugmentor,
+  UserMessageHandler,
 } from './VercelAIAgent';
 
 export interface AgentManagerOptions {
@@ -10,6 +13,9 @@ export interface AgentManagerOptions {
   inactivityThresholdMs?: number;
   cleanupIntervalMs?: number;
   agentIdResolver?: (channelId: string) => string;
+  finalMessageAugmentor?: FinalMessageAugmentor;
+  userMessageHandler?: UserMessageHandler;
+  a2uiActionProvider?: A2uiActionProvider;
 }
 
 export interface StartAgentOptions {
@@ -30,12 +36,18 @@ export class AgentManager {
   private readonly clientToolRegistry = new Map<string, ClientToolDefinition[]>();
   private readonly cleanupTimer: NodeJS.Timeout;
   private readonly agentIdResolver: (channelId: string) => string;
+  private readonly finalMessageAugmentor?: FinalMessageAugmentor;
+  private readonly userMessageHandler?: UserMessageHandler;
+  private readonly a2uiActionProvider?: A2uiActionProvider;
 
   constructor(options: AgentManagerOptions = {}) {
     this.serverToolsFactory = options.serverToolsFactory ?? (() => []);
     this.inactivityThresholdMs = options.inactivityThresholdMs ?? 480 * 60 * 1000;
     this.cleanupIntervalMs = options.cleanupIntervalMs ?? 5000;
     this.agentIdResolver = options.agentIdResolver ?? ((channelId) => channelId);
+    this.finalMessageAugmentor = options.finalMessageAugmentor;
+    this.userMessageHandler = options.userMessageHandler;
+    this.a2uiActionProvider = options.a2uiActionProvider;
     this.cleanupTimer = setInterval(
       () => void this.cleanupInactiveAgents(),
       this.cleanupIntervalMs,
@@ -62,6 +74,9 @@ export class AgentManager {
         model: options.model,
         instructions: options.instructions,
         serverTools: this.serverToolsFactory(),
+        finalMessageAugmentor: this.finalMessageAugmentor,
+        userMessageHandler: this.userMessageHandler,
+        a2uiActionProvider: this.a2uiActionProvider,
       });
       this.agents.set(userId, agent);
     }

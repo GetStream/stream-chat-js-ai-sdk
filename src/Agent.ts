@@ -5,7 +5,10 @@ import {
   ClientToolDefinition,
   VercelAIAgent,
   createModelForPlatform,
+  type A2uiActionProvider,
+  type FinalMessageAugmentor,
   type Mem0ContextInput,
+  type UserMessageHandler,
 } from './VercelAIAgent';
 import { apiKey, serverClient } from './serverClient';
 import { generateText } from 'ai';
@@ -20,6 +23,9 @@ export interface AgentOptions {
   serverTools?: AgentTool[];
   clientTools?: ClientToolDefinition[];
   mem0Context?: Partial<Mem0ContextInput>;
+  finalMessageAugmentor?: FinalMessageAugmentor;
+  userMessageHandler?: UserMessageHandler;
+  a2uiActionProvider?: A2uiActionProvider;
 }
 
 export interface RegisterToolOptions {
@@ -112,6 +118,9 @@ export class Agent {
         this.instructions,
         this.getMem0Context(),
         serverClient,
+        this.options.finalMessageAugmentor,
+        this.options.userMessageHandler,
+        this.options.a2uiActionProvider,
       );
       if (this.clientTools.length) {
         this.aiAgent.setClientToolDefinitions(this.clientTools);
