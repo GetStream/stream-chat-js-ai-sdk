@@ -100,6 +100,18 @@ export type UserMessageHandler = (
   context: UserMessageHandlerContext,
 ) => Promise<boolean> | boolean;
 
+/**
+ * A callback that converts an A2UI action into a natural-language description
+ * that is appended to the user message sent to the LLM.
+ *
+ * Return a string to supply the description, or `undefined` to fall back to
+ * the default behaviour (serialise the action name and raw context as JSON).
+ */
+export type A2uiActionProvider = (
+  actionName: string,
+  context: Record<string, unknown>,
+) => string | undefined;
+
 const cloneMem0ConfigOverrides = (
   config?: Partial<Mem0ConfigSettings>,
 ): Partial<Mem0ConfigSettings> | undefined => {
@@ -335,6 +347,7 @@ export class VercelAIAgent implements AIAgent {
   private readonly mem0Context?: Mem0ContextInput;
   private readonly finalMessageAugmentor?: FinalMessageAugmentor;
   private readonly userMessageHandler?: UserMessageHandler;
+  private readonly a2uiActionProvider?: A2uiActionProvider;
 
   constructor(
     readonly chatClient: StreamChat,
@@ -347,6 +360,7 @@ export class VercelAIAgent implements AIAgent {
     private serverClient: StreamChat,
     finalMessageAugmentor?: FinalMessageAugmentor,
     userMessageHandler?: UserMessageHandler,
+    a2uiActionProvider?: A2uiActionProvider,
   ) {
     this.serverTools = tools ?? [];
     this.modelOverride = modelOverride;
@@ -358,6 +372,7 @@ export class VercelAIAgent implements AIAgent {
     this.mem0Context = mem0Context;
     this.finalMessageAugmentor = finalMessageAugmentor;
     this.userMessageHandler = userMessageHandler;
+    this.a2uiActionProvider = a2uiActionProvider;
   }
 
   init = async () => {
@@ -633,39 +648,17 @@ export class VercelAIAgent implements AIAgent {
       return undefined;
     }
     const ctx = context ?? {};
-    const valueFor = (key: string) => this.extractContextValue(ctx[key]);
 
-    switch (actionName) {
-      case 'book_restaurant': {
-        const restaurant = valueFor('restaurantName') ?? 'Unknown Restaurant';
-        const address = valueFor('address');
-        const imageUrl = valueFor('imageUrl');
-        const parts = [`USER_WANTS_TO_BOOK: ${restaurant}`];
-        if (address) {
-          parts.push(`Address: ${address}`);
-        }
-        if (imageUrl) {
-          parts.push(`ImageURL: ${imageUrl}`);
-        }
-        return parts.join(', ');
+    if (this.a2uiActionProvider) {
+      const result = this.a2uiActionProvider(actionName, ctx);
+      if (result !== undefined) {
+        return result;
       }
-      case 'submit_booking': {
-        const restaurant = valueFor('restaurantName') ?? 'Unknown Restaurant';
-        const partySize = valueFor('partySize') ?? 'Unknown Size';
-        const reservationTime = valueFor('reservationTime') ?? 'Unknown Time';
-        const dietary = valueFor('dietary') ?? 'None';
-        const imageUrl = valueFor('imageUrl');
-        let description = `User submitted a booking for ${restaurant} for ${partySize} people at ${reservationTime} with dietary requirements: ${dietary}`;
-        if (imageUrl) {
-          description += `. Image URL: ${imageUrl}`;
-        }
-        return description;
-      }
-      default:
-        return `User submitted an event: ${actionName} with data: ${JSON.stringify(
-          ctx,
-        )}`;
     }
+
+    return `User submitted an event: ${actionName} with data: ${JSON.stringify(
+      ctx,
+    )}`;
   }
 
   private extractContextValue(value: unknown): string | undefined {

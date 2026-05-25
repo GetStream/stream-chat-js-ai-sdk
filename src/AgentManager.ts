@@ -1,6 +1,7 @@
 import { Agent } from './Agent';
 import type { AgentPlatform } from './types';
 import type {
+  A2uiActionProvider,
   AgentTool,
   ClientToolDefinition,
   FinalMessageAugmentor,
@@ -14,6 +15,7 @@ export interface AgentManagerOptions {
   agentIdResolver?: (channelId: string) => string;
   finalMessageAugmentor?: FinalMessageAugmentor;
   userMessageHandler?: UserMessageHandler;
+  a2uiActionProvider?: A2uiActionProvider;
 }
 
 export interface StartAgentOptions {
@@ -36,6 +38,7 @@ export class AgentManager {
   private readonly agentIdResolver: (channelId: string) => string;
   private readonly finalMessageAugmentor?: FinalMessageAugmentor;
   private readonly userMessageHandler?: UserMessageHandler;
+  private readonly a2uiActionProvider?: A2uiActionProvider;
 
   constructor(options: AgentManagerOptions = {}) {
     this.serverToolsFactory = options.serverToolsFactory ?? (() => []);
@@ -44,6 +47,7 @@ export class AgentManager {
     this.agentIdResolver = options.agentIdResolver ?? ((channelId) => channelId);
     this.finalMessageAugmentor = options.finalMessageAugmentor;
     this.userMessageHandler = options.userMessageHandler;
+    this.a2uiActionProvider = options.a2uiActionProvider;
     this.cleanupTimer = setInterval(
       () => void this.cleanupInactiveAgents(),
       this.cleanupIntervalMs,
@@ -72,6 +76,7 @@ export class AgentManager {
         serverTools: this.serverToolsFactory(),
         finalMessageAugmentor: this.finalMessageAugmentor,
         userMessageHandler: this.userMessageHandler,
+        a2uiActionProvider: this.a2uiActionProvider,
       });
       this.agents.set(userId, agent);
     }

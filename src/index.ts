@@ -5,6 +5,7 @@ export { AgentPlatform } from './types';
 export type { AIAgent } from './types';
 export {
   VercelAIAgent,
+  type A2uiActionProvider,
   type AgentTool,
   type ClientToolDefinition,
   type ToolExecutionContext,
