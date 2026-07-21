@@ -26,8 +26,8 @@
     "@ai-sdk/google": "^2.0.44",
     "@ai-sdk/openai": "^2.0.76",
     "@ai-sdk/xai": "^2.0.39",
-    "@mem0/vercel-ai-provider": "^2.0.4",
-    "ai": "^5.0.106",
+    "@mem0/vercel-ai-provider": "^3.0.0",
+    "ai": "^7.0.34",
     "axios": "^1.13.2",
     "stream-chat": "^9.27.0",
     "zod": "^4.1.13"
