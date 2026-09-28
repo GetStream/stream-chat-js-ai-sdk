@@ -8,6 +8,7 @@ import {
   type A2uiActionProvider,
   type FinalMessageAugmentor,
   type Mem0ContextInput,
+  type ReasoningConfig,
   type UserMessageHandler,
 } from './VercelAIAgent';
 import { apiKey, serverClient } from './serverClient';
@@ -26,6 +27,7 @@ export interface AgentOptions {
   finalMessageAugmentor?: FinalMessageAugmentor;
   userMessageHandler?: UserMessageHandler;
   a2uiActionProvider?: A2uiActionProvider;
+  reasoning?: ReasoningConfig;
 }
 
 export interface RegisterToolOptions {
@@ -121,6 +123,7 @@ export class Agent {
         this.options.finalMessageAugmentor,
         this.options.userMessageHandler,
         this.options.a2uiActionProvider,
+        this.options.reasoning,
       );
       if (this.clientTools.length) {
         this.aiAgent.setClientToolDefinitions(this.clientTools);

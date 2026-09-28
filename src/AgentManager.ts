@@ -5,6 +5,7 @@ import type {
   AgentTool,
   ClientToolDefinition,
   FinalMessageAugmentor,
+  ReasoningConfig,
   UserMessageHandler,
 } from './VercelAIAgent';
 
@@ -25,6 +26,7 @@ export interface StartAgentOptions {
   platform: AgentPlatform;
   model?: string;
   instructions?: string | string[];
+  reasoning?: ReasoningConfig;
 }
 
 export class AgentManager {
@@ -77,6 +79,7 @@ export class AgentManager {
         finalMessageAugmentor: this.finalMessageAugmentor,
         userMessageHandler: this.userMessageHandler,
         a2uiActionProvider: this.a2uiActionProvider,
+        reasoning: options.reasoning,
       });
       this.agents.set(userId, agent);
     }

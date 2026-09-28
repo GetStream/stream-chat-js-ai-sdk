@@ -5,11 +5,15 @@ export { AgentPlatform } from './types';
 export type { AIAgent } from './types';
 export {
   VercelAIAgent,
+  buildReasoningProviderOptions,
   type A2uiActionProvider,
   type AgentTool,
   type ClientToolDefinition,
   type ToolExecutionContext,
   type Mem0ContextInput,
+  type ReasoningConfig,
+  type ReasoningEffort,
+  type ReasoningOptions,
   type FinalMessageAugmentor,
   type FinalMessageAugmentorContext,
   type UserMessageHandler,

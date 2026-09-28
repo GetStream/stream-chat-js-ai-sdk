@@ -22,7 +22,7 @@
   "author": "Stream",
   "license": "MIT",
   "dependencies": {
-    "@ai-sdk/anthropic": "^2.0.53",
+    "@ai-sdk/anthropic": "^2.0.75",
     "@ai-sdk/google": "^2.0.44",
     "@ai-sdk/openai": "^2.0.76",
     "@ai-sdk/xai": "^2.0.39",

@@ -1,11 +1,12 @@
 import type { ModelMessage, Tool } from 'ai';
-import { streamText } from 'ai';
+import { streamText, wrapLanguageModel } from 'ai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createXai } from '@ai-sdk/xai';
 import {
-  createMem0,
+  addMemories,
+  getMemories,
   type Mem0ChatSettings,
   type Mem0ConfigSettings,
 } from '@mem0/vercel-ai-provider';
@@ -31,6 +32,43 @@ type IndicatorState =
 
 type StreamTextOptions = Parameters<typeof streamText>[0];
 type StreamLanguageModel = NonNullable<StreamTextOptions['model']>;
+type ProviderOptions = Record<string, Record<string, any>>;
+
+const DEFAULT_MODEL_IDS: Record<AgentPlatform, string> = {
+  [AgentPlatform.OPENAI]: 'gpt-4o-mini',
+  [AgentPlatform.ANTHROPIC]: 'claude-haiku-4-5',
+  [AgentPlatform.GEMINI]: 'gemini-1.5-flash',
+  [AgentPlatform.XAI]: 'grok-beta',
+};
+
+export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high';
+
+export interface ReasoningOptions {
+  /**
+   * Requested reasoning depth, mapped to the provider-specific setting
+   * (OpenAI `reasoningEffort`, Anthropic `effort`, Gemini `thinkingLevel`,
+   * xAI `reasoningEffort`).
+   */
+  effort?: ReasoningEffort;
+  /**
+   * Thinking token budget for models that take one (Claude Haiku 4.5 and
+   * older Claude models, Gemini 2.5).
+   */
+  budgetTokens?: number;
+  /**
+   * Provider options passed verbatim to `streamText`, replacing the ones the
+   * SDK derives from the platform and model. Use it for models the defaults
+   * don't cover.
+   */
+  providerOptions?: ProviderOptions;
+}
+
+/**
+ * Enables streaming the model's reasoning to the channel. While the model
+ * reasons, the in-progress message carries the reasoning text in its
+ * `reasoning` field; the field is removed when the message is finalized.
+ */
+export type ReasoningConfig = boolean | ReasoningOptions;
 
 export interface Mem0ContextInput {
   userId?: string;
@@ -216,90 +254,188 @@ const getMem0ProviderName = (platform: AgentPlatform): string | null => {
   }
 };
 
-const tryCreateMem0Model = (
+const MEM0_SYSTEM_PROMPT =
+  "These are the memories I have stored. Give more weightage to the question by users and try to answer that first. You have to modify your answer based on the memories I have provided. If the memories are irrelevant you can ignore them. Also don't reply to this section of the prompt, or the memories, they are only for your reference. The System prompt starts after text System Message: \n\n";
+
+const formatMem0Memories = (
+  memories: any,
+  enableGraph?: boolean,
+): string | undefined => {
+  const results = enableGraph ? memories?.results : memories;
+  if (!Array.isArray(results) || !results.length) {
+    return undefined;
+  }
+  const memoriesText = results
+    .map((memory) => `Memory: ${memory?.memory}\n\n`)
+    .join('\n\n');
+  const relations = enableGraph && Array.isArray(memories?.relations)
+    ? memories.relations
+    : [];
+  const graphPrompt = relations.length
+    ? `HERE ARE THE GRAPHS RELATIONS FOR THE PREFERENCES OF THE USER:\n\n ${relations
+      .map(
+        (relation: any) =>
+          `Relation: ${relation?.source} -> ${relation?.relationship} -> ${relation?.target} \n\n`,
+      )
+      .join('\n\n')}`
+    : '';
+  return `System Message: ${MEM0_SYSTEM_PROMPT} ${memoriesText} ${graphPrompt} `;
+};
+
+/**
+ * Adds Mem0 memory to the model: stores each prompt and prepends the relevant
+ * memories as a system message. Mem0's own provider wrapper pins old AI SDK
+ * provider versions, so the memory is applied as middleware on top of the
+ * SDK's providers instead.
+ */
+const withMem0Memory = (
+  model: StreamLanguageModel,
   platform: AgentPlatform,
-  providerApiKey: string,
-  modelId: string,
   context?: Mem0ContextInput,
-): StreamLanguageModel | undefined => {
+): StreamLanguageModel => {
   const mem0ApiKey = process.env.MEM0_API_KEY?.trim();
-  if (!mem0ApiKey) {
-    return undefined;
+  if (!mem0ApiKey || !getMem0ProviderName(platform) || typeof model === 'string') {
+    return model;
   }
-  const providerName = getMem0ProviderName(platform);
-  if (!providerName) {
-    return undefined;
+  const settings: Mem0ConfigSettings = {
+    ...buildMem0Settings(context),
+    mem0ApiKey,
+  };
+  return wrapLanguageModel({
+    model,
+    middleware: {
+      transformParams: async ({ params }) => {
+        const prompt = params.prompt as any;
+        addMemories(prompt, settings).catch(() => {
+          console.warn('Failed to add Mem0 memories');
+        });
+        try {
+          const memories = await getMemories(prompt, settings);
+          const memoriesPrompt = formatMem0Memories(
+            memories,
+            settings.enable_graph,
+          );
+          if (memoriesPrompt) {
+            return {
+              ...params,
+              prompt: [
+                { role: 'system', content: memoriesPrompt },
+                ...params.prompt,
+              ],
+            };
+          }
+        } catch (error) {
+          console.warn('Failed to retrieve Mem0 memories. Continuing without them.');
+        }
+        return params;
+      },
+    },
+  });
+};
+
+const resolveModelId = (
+  platform: AgentPlatform,
+  modelOverride?: string,
+): string =>
+  typeof modelOverride === 'string' && modelOverride.trim()
+    ? modelOverride.trim()
+    : DEFAULT_MODEL_IDS[platform];
+
+/**
+ * Claude models before 4.6 enable thinking with a fixed token budget; newer
+ * ones use adaptive thinking and reject `budget_tokens`.
+ */
+const usesClaudeThinkingBudget = (modelId: string): boolean => {
+  if (/^claude-(?:instant|2|3)/.test(modelId)) {
+    return true;
   }
+  const match = modelId.match(
+    /^claude-(?:haiku|sonnet|opus)-(\d+)(?:-(\d{1,2})(?!\d))?/,
+  );
+  if (!match) {
+    return false;
+  }
+  const major = Number(match[1]);
+  const minor = Number(match[2] ?? 0);
+  return major < 4 || (major === 4 && minor <= 5);
+};
 
-  try {
-    const mem0Settings = buildMem0Settings(context);
-    const mem0Provider = createMem0({
-      provider: providerName,
-      apiKey: providerApiKey,
-      mem0ApiKey,
-      mem0Config: mem0Settings,
-    });
-
-    return mem0Provider(modelId, mem0Settings) as unknown as StreamLanguageModel;
-  } catch (error) {
-    console.warn(
-      `Mem0 integration failed for platform ${platform}. Falling back to base model.`,
-      (error as Error).message,
-    );
-    return undefined;
+export const buildReasoningProviderOptions = (
+  platform: AgentPlatform,
+  modelId: string,
+  options: ReasoningOptions = {},
+): ProviderOptions | undefined => {
+  if (options.providerOptions) {
+    return options.providerOptions;
+  }
+  const { effort, budgetTokens } = options;
+  switch (platform) {
+    case AgentPlatform.OPENAI:
+      return {
+        openai: {
+          reasoningSummary: 'auto',
+          ...(effort && { reasoningEffort: effort }),
+        },
+      };
+    case AgentPlatform.ANTHROPIC:
+      if (usesClaudeThinkingBudget(modelId)) {
+        return {
+          anthropic: {
+            thinking: { type: 'enabled', budgetTokens: budgetTokens ?? 1024 },
+          },
+        };
+      }
+      return {
+        anthropic: {
+          thinking: { type: 'adaptive', display: 'summarized' },
+          ...(effort && { effort: effort === 'minimal' ? 'low' : effort }),
+        },
+      };
+    case AgentPlatform.GEMINI:
+      return {
+        google: {
+          thinkingConfig: {
+            includeThoughts: true,
+            ...(budgetTokens != null && { thinkingBudget: budgetTokens }),
+            ...(effort && { thinkingLevel: effort }),
+          },
+        },
+      };
+    case AgentPlatform.XAI:
+      // Reasoning xAI models return their reasoning without extra options.
+      return effort
+        ? {
+          xai: {
+            reasoningEffort:
+              effort === 'minimal' || effort === 'low' ? 'low' : 'high',
+          },
+        }
+        : undefined;
+    default:
+      return undefined;
   }
 };
 
-export const createModelForPlatform = (
+const createProviderModel = (
   platform: AgentPlatform,
-  modelOverride?: string,
-  options?: CreateModelOptions,
+  modelId: string,
 ): StreamLanguageModel => {
-  const modelId = typeof modelOverride === 'string' && modelOverride.trim()
-    ? modelOverride.trim()
-    : undefined;
   switch (platform) {
     case AgentPlatform.OPENAI: {
       const apiKey = process.env.OPENAI_API_KEY;
       if (!apiKey) {
         throw new Error('OpenAI API key is required');
       }
-      const resolvedModelId = modelId ?? 'gpt-4o-mini';
-      const mem0Model =
-        options?.disableMem0
-          ? undefined
-          : tryCreateMem0Model(
-            platform,
-            apiKey,
-            resolvedModelId,
-            options?.mem0Context,
-          );
-      if (mem0Model) {
-        return mem0Model;
-      }
       const openai = createOpenAI({ apiKey });
-      return openai(resolvedModelId) as StreamLanguageModel;
+      return openai(modelId) as StreamLanguageModel;
     }
     case AgentPlatform.ANTHROPIC: {
       const apiKey = process.env.ANTHROPIC_API_KEY;
       if (!apiKey) {
         throw new Error('Anthropic API key is required');
       }
-      const resolvedModelId = modelId ?? 'claude-haiku-4-5';
-      const mem0Model =
-        options?.disableMem0
-          ? undefined
-          : tryCreateMem0Model(
-            platform,
-            apiKey,
-            resolvedModelId,
-            options?.mem0Context,
-          );
-      if (mem0Model) {
-        return mem0Model;
-      }
       const anthropic = createAnthropic({ apiKey });
-      return anthropic(resolvedModelId) as StreamLanguageModel;
+      return anthropic(modelId) as StreamLanguageModel;
     }
     case AgentPlatform.GEMINI: {
       const apiKey =
@@ -308,21 +444,8 @@ export const createModelForPlatform = (
       if (!apiKey) {
         throw new Error('Gemini API key is required');
       }
-      const resolvedModelId = modelId ?? 'gemini-1.5-flash';
-      const mem0Model =
-        options?.disableMem0
-          ? undefined
-          : tryCreateMem0Model(
-            platform,
-            apiKey,
-            resolvedModelId,
-            options?.mem0Context,
-          );
-      if (mem0Model) {
-        return mem0Model;
-      }
       const google = createGoogleGenerativeAI({ apiKey });
-      return google(resolvedModelId) as StreamLanguageModel;
+      return google(modelId) as StreamLanguageModel;
     }
     case AgentPlatform.XAI: {
       const apiKey = process.env.XAI_API_KEY;
@@ -330,11 +453,25 @@ export const createModelForPlatform = (
         throw new Error('xAI API key is required');
       }
       const xai = createXai({ apiKey });
-      return xai((modelId ?? 'grok-beta')) as StreamLanguageModel;
+      return xai(modelId) as StreamLanguageModel;
     }
     default:
       throw new Error(`Unsupported AI platform: ${platform}`);
   }
+};
+
+export const createModelForPlatform = (
+  platform: AgentPlatform,
+  modelOverride?: string,
+  options?: CreateModelOptions,
+): StreamLanguageModel => {
+  const model = createProviderModel(
+    platform,
+    resolveModelId(platform, modelOverride),
+  );
+  return options?.disableMem0
+    ? model
+    : withMem0Memory(model, platform, options?.mem0Context);
 };
 
 export class VercelAIAgent implements AIAgent {
@@ -348,6 +485,7 @@ export class VercelAIAgent implements AIAgent {
   private readonly finalMessageAugmentor?: FinalMessageAugmentor;
   private readonly userMessageHandler?: UserMessageHandler;
   private readonly a2uiActionProvider?: A2uiActionProvider;
+  private readonly reasoning?: ReasoningOptions;
 
   constructor(
     readonly chatClient: StreamChat,
@@ -361,6 +499,7 @@ export class VercelAIAgent implements AIAgent {
     finalMessageAugmentor?: FinalMessageAugmentor,
     userMessageHandler?: UserMessageHandler,
     a2uiActionProvider?: A2uiActionProvider,
+    reasoning?: ReasoningConfig,
   ) {
     this.serverTools = tools ?? [];
     this.modelOverride = modelOverride;
@@ -373,6 +512,8 @@ export class VercelAIAgent implements AIAgent {
     this.finalMessageAugmentor = finalMessageAugmentor;
     this.userMessageHandler = userMessageHandler;
     this.a2uiActionProvider = a2uiActionProvider;
+    this.reasoning =
+      reasoning === true ? {} : reasoning ? reasoning : undefined;
   }
 
   init = async () => {
@@ -594,6 +735,15 @@ export class VercelAIAgent implements AIAgent {
       () => this.getActiveTools(),
       this.serverClient,
       this.finalMessageAugmentor,
+      this.reasoning
+        ? {
+          providerOptions: buildReasoningProviderOptions(
+            this.platform,
+            resolveModelId(this.platform, this.modelOverride),
+            this.reasoning,
+          ),
+        }
+        : undefined,
     );
 
     this.handlers.add(handler);
@@ -748,16 +898,19 @@ export class VercelAIAgent implements AIAgent {
 class VercelResponseHandler {
   private controller: AbortController | null = null;
   private messageText = '';
+  private reasoningText = '';
   private finalized = false;
   private aborted = false;
   private currentIndicator?: IndicatorState;
   private indicatorCleared = false;
   private pendingUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastUpdateScheduledAt = 0;
   private lastUpdatePromise: Promise<void> = Promise.resolve();
   private readonly updateIntervalMs = 200;
   private disposed = false;
   private readonly toolsResolver: () => AgentTool[];
   private readonly finalMessageAugmentor?: FinalMessageAugmentor;
+  private readonly reasoning?: { providerOptions?: ProviderOptions };
 
   constructor(
     private readonly model: StreamLanguageModel,
@@ -769,10 +922,12 @@ class VercelResponseHandler {
     toolsResolver: () => AgentTool[],
     private readonly serverClient: StreamChat,
     finalMessageAugmentor?: FinalMessageAugmentor,
+    reasoning?: { providerOptions?: ProviderOptions },
   ) {
     this.chatClient.on('ai_indicator.stop', this.handleStopGenerating);
     this.toolsResolver = toolsResolver;
     this.finalMessageAugmentor = finalMessageAugmentor;
+    this.reasoning = reasoning;
   }
 
   run = async () => {
@@ -788,6 +943,9 @@ class VercelResponseHandler {
       if (toolDefinitions) {
         (streamOptions as any).toolChoice = 'auto';
         (streamOptions as any).tools = toolDefinitions;
+      }
+      if (this.reasoning?.providerOptions) {
+        (streamOptions as any).providerOptions = this.reasoning.providerOptions;
       }
 
       const result = await streamText(streamOptions);
@@ -869,6 +1027,23 @@ class VercelResponseHandler {
             this.schedulePartialUpdate();
             break;
           }
+          case 'reasoning-start': {
+            // Providers can split the reasoning into several parts.
+            if (this.reasoningText) {
+              this.reasoningText += '\n\n';
+            }
+            break;
+          }
+          case 'reasoning-delta': {
+            const delta = part.text;
+            if (!delta || !this.reasoning) break;
+            this.reasoningText += delta;
+            // Once the answer starts streaming, clients show it instead.
+            if (!this.messageText) {
+              this.schedulePartialUpdate();
+            }
+            break;
+          }
           case 'tool-result': {
             const toolOutput = part.output;
             if (!toolOutput) break;
@@ -925,24 +1100,30 @@ class VercelResponseHandler {
   private schedulePartialUpdate() {
     if (this.finalized) return;
     if (this.pendingUpdateTimer) return;
+    // Send the first update right away, then at most one per interval.
+    const delay = Math.max(
+      0,
+      this.lastUpdateScheduledAt + this.updateIntervalMs - Date.now(),
+    );
     this.pendingUpdateTimer = setTimeout(() => {
       this.pendingUpdateTimer = null;
+      this.lastUpdateScheduledAt = Date.now();
       void this.flushPartialUpdate();
-    }, this.updateIntervalMs);
+    }, delay);
   }
 
   private async flushPartialUpdate() {
     if (this.finalized) return;
     const text = this.messageText;
+    const set: Record<string, unknown> = { text, generating: true };
+    if (!text && this.reasoningText) {
+      set.reasoning = this.reasoningText;
+    }
     const id = this.message.id;
     const userId = this.chatClient.user?.id;
     this.lastUpdatePromise = this.lastUpdatePromise.then(() => {
       return this.serverClient
-        .ephemeralUpdateMessage(
-          id,
-          { set: { text, generating: true } as any },
-          userId,
-        )
+        .ephemeralUpdateMessage(id, { set: set as any }, userId)
         .then(
           () => console.log(`[ephemeralUpdateMessage] success messageId=${id}`),
           (err) => console.error("[ephemeralUpdateMessage] failed", err),
@@ -1009,6 +1190,7 @@ class VercelResponseHandler {
     const setPayload = await this.buildFinalSetPayload();
     await this.chatClient.partialUpdateMessage(this.message.id, {
       set: setPayload as any,
+      ...this.reasoningUnset(),
     });
     await this.clearIndicator();
   }
@@ -1026,7 +1208,12 @@ class VercelResponseHandler {
         text: error.message ?? 'Error generating the message',
         generating: false,
       } as any,
+      ...this.reasoningUnset(),
     });
+  }
+
+  private reasoningUnset(): { unset?: any } {
+    return this.reasoningText ? { unset: ['reasoning'] } : {};
   }
 }
 

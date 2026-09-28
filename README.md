@@ -125,6 +125,25 @@ manager.dispose();
 - **Server tools** run in Node and receive the channel/message context plus typed arguments (validated by Zod). Register or replace them with `agent.registerServerTools`.
 - **Client tools** are JSON-schema definitions that the SDK relays back to clients via Stream events so front-ends can execute privileged actions while maintaining the tool-call UX.
 
+### Streaming reasoning
+
+Pass `reasoning` to `Agent` or `AgentManager.startAgent` to show the model's reasoning while it works:
+
+```ts
+await manager.startAgent({
+  userId: 'ai-support-bot-123',
+  channelId: 'support-room',
+  channelType: 'messaging',
+  platform: AgentPlatform.OPENAI,
+  model: 'gpt-5-mini',
+  reasoning: true, // or { effort: 'low' }, { budgetTokens: 2048 }, { providerOptions: {...} }
+});
+```
+
+The SDK requests visible reasoning from the provider (OpenAI reasoning summaries, Claude thinking, Gemini thoughts) and streams it into the in-progress message's `reasoning` field. The field is only set until the answer starts streaming, and it's removed when the message is finalized, so clients can show it in place of the message text and swap in the answer as soon as it arrives. The typing indicator stays `AI_STATE_THINKING` while the model reasons, so clients that don't render `reasoning` keep working as before.
+
+Only reasoning models return reasoning (e.g. GPT-5 and o-series, Claude 3.7+, Gemini 2.5+, Grok 3 mini).
+
 ### Summaries
 
 Need unread badges or channel list previews? Call `await agent.summarize(text)` or `Agent.generateSummary(text, platform)` to produce a short, LLM-generated headline.
